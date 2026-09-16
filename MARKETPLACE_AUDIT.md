@@ -1,5 +1,7 @@
 # Marketplace audit
 
+Published 2026-09-16 as **wacrm + Supabase**, code `wacrm-supabase`, category Automation.
+
 Checked 2026-09-16 against Railway's template search.
 
 ## Gap
