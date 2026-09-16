@@ -73,4 +73,4 @@ image is pushed.
 
 The deploy form asks for one value, `OWNER_EMAIL`. After deploying, copy `OWNER_PASSWORD` from the app
 service's variables and sign in on the app's domain. Set `META_APP_SECRET` once you have created your Meta
-app, and point its webhook at `https://<app-domain>/api/whatsapp/webhook`.
+app, and point its webhook at `/api/whatsapp/webhook` on the app's domain.
