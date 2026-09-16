@@ -1,0 +1,176 @@
+# Local test topology. Mirrors the Railway service graph one-to-one: the same eight services, the same
+# names, one volume per stateful service, and every value Railway passes as a variable reference
+# written out here. Wrapper images are built from this repository; CI and the Railway template use
+# the published GHCR images instead.
+#
+#   db         Supabase Postgres        wrapper   volume
+#   auth       Supabase Auth (GoTrue)   upstream
+#   rest       PostgREST                upstream
+#   realtime   Supabase Realtime        upstream
+#   storage    Supabase Storage         wrapper   volume
+#   kong       API gateway              wrapper   public
+#   app        wacrm                    built     public
+#   scheduler  cron pinger              wrapper
+#
+# Every secret below is a fixed, public, local-test-only value. The Railway template generates real
+# ones. The browser and the containers must reach the gateway at the same URL, so Kong listens on the
+# same port inside as it is published on, under a network alias that also resolves on the host. Both
+# published ports can be moved with WACRM_TEST_GATEWAY_PORT and WACRM_TEST_PORT.
+name: wacrm-railway-test
+
+x-wrapper-build: &wrapper-build
+  context: .
+  args:
+    WRAPPER_VERSION: ${WRAPPER_VERSION:-0.0.0-local}
+    VCS_REF: ${VCS_REF:-local}
+
+services:
+  db:
+    build: { <<: *wrapper-build, dockerfile: images/db/Dockerfile }
+    image: ${WACRM_RAILWAY_DB_IMAGE:-wacrm-railway-db:local}
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: localtestonlypostgrespassword0000000000000000
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  auth:
+    image: docker.io/supabase/gotrue:v2.196.0@sha256:c0c25187a6b835e65a6f6e6c6b39d090e832d40e6de5186f2c038e0411944232
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      GOTRUE_API_HOST: "::"
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: http://kong.localhost:${WACRM_TEST_GATEWAY_PORT:-18500}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:localtestonlypostgrespassword0000000000000000@db:5432/postgres
+      GOTRUE_SITE_URL: http://localhost:${WACRM_TEST_PORT:-13500}
+      GOTRUE_URI_ALLOW_LIST: http://localhost:${WACRM_TEST_PORT:-13500}/**
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+
+  rest:
+    image: docker.io/postgrest/postgrest:v14.17@sha256:c9dc201e555f5d8e37e7f39cdd4df0229774996e213bfd7de8d10ac609030f2c
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      PGRST_DB_URI: postgres://authenticator:localtestonlypostgrespassword0000000000000000@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_MAX_ROWS: "1000"
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_EXP: "3600"
+      # `*6`, not `*`: `*` binds IPv4 only, and the gateway reaches PostgREST over IPv6 first.
+      PGRST_SERVER_HOST: "*6"
+      PGRST_SERVER_PORT: "3000"
+
+  realtime:
+    image: docker.io/supabase/realtime:v2.134.10@sha256:cbcc6a7986fc28b6dcffa798b077d5fb9c69cd25500371ab49147a86d7edbb03
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      PORT: "4000"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: supabase_admin
+      DB_PASSWORD: localtestonlypostgrespassword0000000000000000
+      DB_NAME: postgres
+      DB_AFTER_CONNECT_QUERY: SET search_path TO _realtime
+      DB_ENC_KEY: localtestonly000
+      API_JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      METRICS_JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      SECRET_KEY_BASE: localtestonlysecretkeybase00000000000000000000000000000000000000000000
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      SELF_HOST_TENANT_NAME: realtime
+      RUN_JANITOR: "true"
+      DISABLE_HEALTHCHECK_LOGGING: "true"
+
+  storage:
+    build: { <<: *wrapper-build, dockerfile: images/storage/Dockerfile }
+    image: ${WACRM_RAILWAY_STORAGE_IMAGE:-wacrm-railway-storage:local}
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      DATABASE_URL: postgres://supabase_storage_admin:localtestonlypostgrespassword0000000000000000@db:5432/postgres
+      POSTGREST_URL: http://rest:3000
+      STORAGE_PUBLIC_URL: http://kong.localhost:${WACRM_TEST_GATEWAY_PORT:-18500}
+    volumes:
+      - storage:/var/lib/storage
+
+  kong:
+    build: { <<: *wrapper-build, dockerfile: images/kong/Dockerfile }
+    image: ${WACRM_RAILWAY_KONG_IMAGE:-wacrm-railway-kong:local}
+    restart: unless-stopped
+    depends_on: [auth, rest, realtime, storage]
+    environment:
+      PORT: ${WACRM_TEST_GATEWAY_PORT:-18500}
+      JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      AUTH_HOST: auth
+      REST_HOST: rest
+      REALTIME_HOST: realtime
+      STORAGE_HOST: storage
+    ports: ["127.0.0.1:${WACRM_TEST_GATEWAY_PORT:-18500}:${WACRM_TEST_GATEWAY_PORT:-18500}"]
+    networks:
+      default:
+        aliases: [kong.localhost]
+
+  app:
+    build: { <<: *wrapper-build, dockerfile: images/app/Dockerfile }
+    image: ${WACRM_RAILWAY_APP_IMAGE:-wacrm-railway-app:local}
+    restart: unless-stopped
+    depends_on: [kong]
+    environment:
+      PORT: "3000"
+      NEXT_PUBLIC_SITE_URL: http://localhost:${WACRM_TEST_PORT:-13500}
+      NEXT_PUBLIC_SUPABASE_URL: http://kong.localhost:${WACRM_TEST_GATEWAY_PORT:-18500}
+      SUPABASE_INTERNAL_URL: http://kong:${WACRM_TEST_GATEWAY_PORT:-18500}
+      JWT_SECRET: local-test-only-jwt-secret-000000000000000000000000000000
+      SUPABASE_DB_URL: postgres://postgres:localtestonlypostgrespassword0000000000000000@db:5432/postgres
+      ENCRYPTION_KEY: "00000000000000000000000000000000000000000000000000000000000000a1"
+      META_APP_SECRET: local-test-only-meta-app-secret-000000000
+      AUTOMATION_CRON_SECRET: local-test-only-cron-secret-00000000000000000000
+      OWNER_EMAIL: owner@example.com
+      OWNER_PASSWORD: local-test-only-owner-password
+      OWNER_NAME: Local Owner
+      ACCOUNT_NAME: Local Test Company
+    ports: ["127.0.0.1:${WACRM_TEST_PORT:-13500}:3000"]
+
+  scheduler:
+    build: { <<: *wrapper-build, dockerfile: images/scheduler/Dockerfile }
+    image: ${WACRM_RAILWAY_SCHEDULER_IMAGE:-wacrm-railway-scheduler:local}
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      WACRM_APP_ORIGIN: http://app:3000
+      AUTOMATION_CRON_SECRET: local-test-only-cron-secret-00000000000000000000
+      WACRM_CRON_INTERVAL: "15"
+
+# IPv6 on, like Railway's private network: every service name resolves to an AAAA record as well,
+# and clients that prefer it (Kong does) expose any listener that is IPv4 only.
+networks:
+  default:
+    enable_ipv6: true
+
+volumes:
+  db:
+  storage:
