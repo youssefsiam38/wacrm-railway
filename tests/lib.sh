@@ -97,3 +97,10 @@ rest_as() {
 
 # psql_admin SQL -> tuples only, unaligned
 psql_admin() { compose exec -T db psql -U supabase_admin -d postgres -tAc "$1"; }
+
+# The user id inside a Supabase access token (the file holds the token).
+token_sub() {
+  local p; p=$(cut -d. -f2 "$1" | tr '_-' '/+')
+  while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+  base64 -d <<<"$p" | jq -r .sub
+}

@@ -88,7 +88,7 @@ assert_eq "the invitee's signup is admitted" "200" "$(sign_up invitee@example.co
 cp "$TEST_TMP/signup-token" "$TEST_TMP/invitee-token"
 redeem=$(rest_as "$TEST_TMP/invitee-token" '/rest/v1/rpc/redeem_invitation' -X POST -H 'Content-Type: application/json' --data "$(jq -nc --arg h "$HASH" '{p_token_hash:$h}')")
 assert_eq "redeeming it (upstream code) moves them into the owner's account" "\"$ACCOUNT_ID\"" "$redeem"
-assert_eq "as an agent" "agent" "$(rest_as "$TEST_TMP/invitee-token" '/rest/v1/profiles?select=account_role&account_role=neq.owner' | jq -r '.[0].account_role')"
+assert_eq "as an agent" "agent" "$(rest_as "$TEST_TMP/invitee-token" "/rest/v1/profiles?select=account_role&user_id=eq.$(token_sub "$TEST_TMP/invitee-token")" | jq -r '.[0].account_role')"
 assert_eq "the used token admits nobody else" "500" "$(sign_up second@example.com "$TEST_TMP/other-pw" "$TOKEN")"
 assert_eq "no invitation token is stored in auth.users" "0" "$(psql_admin "select count(*) from auth.users where raw_user_meta_data ? 'invite_token'")"
 

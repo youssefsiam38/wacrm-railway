@@ -62,5 +62,25 @@ if [ -n "${OWNER_EMAIL:-}" ] && [ -n "${OWNER_PASSWORD_FILE:-}" ]; then
   sign_in "$OWNER_EMAIL" "$OWNER_PASSWORD_FILE" "$TEST_TMP/owner-token" && pass "owner signs in" || fail "owner sign-in failed"
   [ -s "$TEST_TMP/owner-token" ] && assert_eq "the owner owns an account" "owner" \
     "$(rest_as "$TEST_TMP/owner-token" '/rest/v1/profiles?select=account_role' | jq -r '.[0].account_role')"
+
+  if [ -s "$TEST_TMP/owner-token" ]; then
+    section "an invited teammate joins the owner's account"
+    ACCOUNT_ID=$(rest_as "$TEST_TMP/owner-token" '/rest/v1/profiles?select=account_id' | jq -r '.[0].account_id')
+    TOKEN="invite-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
+    code=$(http_code -X POST "$GATEWAY_URL/rest/v1/account_invitations" -H "apikey: $(anon_key)" -H "Authorization: Bearer $(cat "$TEST_TMP/owner-token")" \
+      -H 'Content-Type: application/json' --data "$(jq -nc --arg a "$ACCOUNT_ID" --arg h "$HASH" '{account_id:$a, token_hash:$h, role:"agent", expires_at:"2099-01-01T00:00:00Z"}')")
+    assert_eq "the owner creates an invitation, as the team page does" "201" "$code"
+    stamp=$(date +%s)
+    head -c 18 /dev/urandom | base64 | tr -d '/+=\n' > "$TEST_TMP/invitee-pw"
+    assert_eq "the invitee's signup with the link's token is admitted" "200" "$(sign_up "invitee-$stamp@elsewhere.example" "$TEST_TMP/invitee-pw" "$TOKEN")"
+    cp "$TEST_TMP/signup-token" "$TEST_TMP/invitee-token"
+    redeem=$(rest_as "$TEST_TMP/invitee-token" '/rest/v1/rpc/redeem_invitation' -X POST -H 'Content-Type: application/json' --data "$(jq -nc --arg h "$HASH" '{p_token_hash:$h}')")
+    assert_eq "redeeming it (upstream code) moves them into the owner's account" "\"$ACCOUNT_ID\"" "$redeem"
+    assert_eq "as an agent" "agent" "$(rest_as "$TEST_TMP/invitee-token" "/rest/v1/profiles?select=account_role&user_id=eq.$(token_sub "$TEST_TMP/invitee-token")" | jq -r '.[0].account_role')"
+    assert_eq "the used token admits nobody else" "500" "$(sign_up "second-$stamp@elsewhere.example" "$TEST_TMP/probe-pw" "$TOKEN")"
+    invitee_id=$(token_sub "$TEST_TMP/invitee-token")
+    assert_eq "the owner sees the teammate in their account" "1" "$(rest_as "$TEST_TMP/owner-token" "/rest/v1/profiles?select=user_id&account_id=eq.$ACCOUNT_ID&user_id=eq.$invitee_id" | jq 'length')"
+  fi
 fi
 summary
